@@ -1,38 +1,84 @@
-# Hackintosh EFI Backup
+# Gigabyte Z370 AORUS Gaming 7 + RTX 3060 Hackintosh OpenCore EFI
 
-**Date:** October 13, 2026  
-**BIOS Version:** F15 (Gigabyte Z390 AORUS PRO)  
-**OpenCore:** Latest with NullMoth 1.15.0  
+Bu depo, **macOS 15 Sequoia** çalıştıran aşağıdaki donanım konfigürasyonunun çalışan, test edilmiş tam OpenCore EFI önyükleyicisini ve otonom yapay zeka ajanları (Hermes, Claude Code vb.) için sıfırdan kurulum reçetesini içerir.
 
-## Hardware
-- **CPU:** Intel Core i9-9900K (Coffee Lake)
-- **GPU:** NVIDIA RTX (with NullMoth for Sequoia)
-- **RAM:** 32GB DDR4
-- **Storage:** NVMe SSD
+## 🖥️ Donanım Özellikleri
+- **Anakart:** Gigabyte Z370 AORUS Gaming 7 (Rev 1.0)
+- **BIOS Sürümü:** F15 (28 Kasım 2021 - Resizable BAR destekli)
+- **İşlemci:** Intel Core i7-8700K (Coffee Lake 6C/12T @ 3.7 - 4.7 GHz)
+- **Ekran Kartı:** NVIDIA GeForce RTX 3060 12GB (Ampere GA106)
+- **Monitör:** Samsung C27HG7x 27" 2560x1440 @ 144Hz (DisplayPort)
+- **Hedef Disk:** Samsung 970 EVO 250GB NVMe SSD (macOS)
+- **İkincil Disk:** KIOXIA Exceria Plus G3 NVMe SSD (Windows 11)
 
-## Boot Performance
-- BIOS POST → OpenCore: ~8-12 seconds (F15 memory training)
-- OpenCore → macOS kernel handoff: ~180 seconds
-- Total boot time: ~3 minutes
+---
 
-## Key Features
-- **NullMoth 1.15.0:** NVIDIA driver compatibility for macOS Sequoia
-- **ReBAR Support:** ResizeAppleGpuBars = 0, ResizeGpuBars = -1
-- **Fast Boot:** Can be enabled in BIOS to skip memory training
-- **AMFI Pass:** Disabled for kext loading
+## ⚙️ Zorunlu BIOS Ayarları (F15)
+Anakart BIOS'u fabrika ayarlarına sıfırlandıktan (Clear CMOS) sonra şu ayarlar yapılmalıdır:
+1. **Peripherals:**
+   - `Above 4G Decoding`: **Enabled** (RTX 3060 GOP görüntü çıkışı için zorunlu)
+   - `Re-Size BAR Support`: **Auto**
+   - `Initial Display Output`: **PCIe 1 Slot**
+   - `XHCI Hand-off`: **Enabled**
+   - `SATA Mode`: **AHCI**
+2. **Chipset:**
+   - `Internal Graphics` (Intel iGPU): **Disabled** (iMacPro1,1 SMBIOS ile PCI0 çakışmasını önler)
+   - `VT-d`: **Disabled**
+3. **BIOS Features:**
+   - `CSM Support`: **Disabled** (Saf UEFI zorunlu)
+4. **M.I.T.:**
+   - `Extreme Memory Profile (X.M.P.)`: **Profile 1**
 
-## Boot Arguments
+---
+
+## 🧠 Kritik OpenCore Parametreleri ve Tuzaklar (Agent Playbook)
+
+1. **SSDT-AWAC.aml Zorunluluğu (RTC Donanımsal Saat Fixi):**
+   - Gigabyte F15 BIOS'unda ACPI DSDT tablosu `STAS = 0` yapar ve `Device (AWAC)` devreye girerken eski `Device (RTC)` (`PNP0B00`) kapatılır.
+   - macOS Sequoia'da yerel AWAC sürücüsü olmadığı için sistem saatsiz kalır ve kernel `[AHCI] start::514:Successfully initialized AHCI controller` satırında sonsuz döngüde donar.
+   - Bu repodaki derlenmiş `EFI/OC/ACPI/SSDT-AWAC.aml` tablosu `STAS = One` yaparak legacy RTC'yi açar.
+   - Ayrıca `Kernel -> Quirks -> DisableRtcChecksum = True` ayarı Gigabyte anakartlarda CMOS resetlenmesini engeller.
+
+2. **Resizable BAR & Kernel PCI Uyumluluğu:**
+   - `Booter -> Quirks -> ResizeAppleGpuBars`: **0** (macOS erken kernelinin 1GB üzeri BAR adreslemesinde `PCI configuration PCI0` satırında donmasını önler).
+   - `UEFI -> Quirks -> ResizeGpuBars`: **-1** (OpenCore'un UEFI açılışında donmasını önler).
+
+3. **Yerel USB Desteği (Kext Çakışma Engelleme):**
+   - Z370 yonga seti macOS Sequoia tarafından `AppleUSBXHCIPCI` ile doğal desteklenir.
+   - `USBToolBox.kext`, `UTBDefault.kext` ve `XHCI-unsupported.kext` kextleri `config.plist` içinde **Disabled** kalmalıdır (aksi halde `waitForMatchingService` döngüsünde kilitlenir).
+
+4. **Ekran Kartı Sürücüsü (NullMoth v1.15.0 Metal 3):**
+   - SMBIOS: `iMacPro1,1` (Apple dahili grafik aramayı bırakıp yalnızca PCIe GPU'ya bağlanır).
+   - Sürücü: NullMoth Metal 3 Stack (`NVRM.kext`, `NVAccel.kext`, `NVRMFB.kext`, `NVRMAGDC.kext` + `/Library/GPUBundles/NVMTLDriver.bundle`).
+   - 144Hz Modu: `NVRMFB.kext` içindeki 22-baytlık pixel clock assembly kontrolü korunmuştur.
+
+---
+
+## 🤖 Otonom Ajan Sıfırdan Kurulum Prosedürü
+
+### Adım 1: USB / EFI Hazırlama
+FAT32 formatlı GPT USB diske bu depodaki `EFI` klasörü kopyalanır:
+```bash
+cp -R EFI /Volumes/<USB_DRIVE>/
 ```
--v debug=0x100 keepsyms=1 nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth amfi_get_out_of_my_way=0x1 amfi=0x80
+
+### Adım 2: macOS Sequoia Kurulumu
+macOS 15 Sequoia Recovery (`BaseSystem.dmg`) üzerinden hedef Samsung 970 EVO diskine:
+- Format: `APFS`
+- Scheme: `GUID Partition Map`
+- İsim: `macOS`
+seçilerek işletim sistemi kurulur.
+
+### Adım 3: Dahili NVMe Diske EFI Kopyalama
+Kurulum tamamlandıktan sonra dahili diskin EFI bölümü bağlanır ve USB'deki EFI içeriye aktarılır:
+```bash
+sudo diskutil mount /dev/disk0s1
+sudo cp -R /Volumes/<USB_DRIVE>/EFI /Volumes/EFI/
+sudo diskutil unmount /Volumes/EFI
 ```
 
-## Restore Instructions
-1. Format USB as FAT32 with GPT
-2. Copy EFI folder to USB root
-3. Boot from USB
-4. Copy EFI to internal drive's EFI partition
+### Adım 4: NullMoth Sürücüsünü Devreye Alma
+Masaüstü açıldıktan sonra NullMoth 1.15.0 kextleri sisteme işlenir (`./install.sh`) ve sistem yeniden başlatılır.
 
-## Notes
-- This backup includes the working configuration after F15 BIOS update
-- Memory training adds ~8-12s to POST time (can be reduced with Fast Boot)
-- All kexts and ACPI patches are included
+---
+*Yedek Tarihi: 13 Ekim 2026 - Test Edildi & Çalışır Durumda.*
